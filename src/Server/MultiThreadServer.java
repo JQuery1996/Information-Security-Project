@@ -14,6 +14,7 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Base64;
 import java.util.Objects;
 
 public class MultiThreadServer  implements Runnable {
@@ -25,6 +26,7 @@ public class MultiThreadServer  implements Runnable {
     private PublicKey publicKey ;
     private PrivateKey privateKey ;
     private final String SERIAL_CODE = "TOP_SECRET" ;
+    private SecretKey sessionKey  ;
     public MultiThreadServer ( Socket client ) {
         try {
             this.client = client ;
@@ -32,6 +34,9 @@ public class MultiThreadServer  implements Runnable {
             this.objectOutputStream = new ObjectOutputStream ( this.client.getOutputStream() ) ;
             this.objectInputStream  = new ObjectInputStream  ( this.client.getInputStream () ) ;
             this.secretKey = Encrypt.getKey( this.SERIAL_CODE ) ;
+            RsaEncrypt rsaEncrypt = new RsaEncrypt() ;
+            this.publicKey = rsaEncrypt.getPublicKey() ;
+            this.privateKey = rsaEncrypt.getPrivateKey() ;
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -49,7 +54,14 @@ public class MultiThreadServer  implements Runnable {
             long accountNumber = Long.parseLong(Objects.requireNonNull(Encrypt.decryptMessage(this.secretKey, String.valueOf(this.objectInputStream.readObject()))));
             String password = Encrypt.decryptMessage( this.secretKey , (String) this.objectInputStream.readObject());
             if ( ! makeAuthentication( accountNumber , password ) ) { System.out.println("[!] Login Operation Failed ....") ; this.handelLogin() ; }
+
+            // Send Keys To Client
+            this.objectOutputStream.writeObject( this.clientModel.getPublicKey() );
+            this.objectOutputStream.writeObject( this.publicKey ) ;
+
             System.out.println("[#] Login Operation Has Been Completed Successfully...");
+
+
             return true ;
         } catch (IOException | ClassNotFoundException e) {
             e.printStackTrace();
@@ -95,10 +107,10 @@ public class MultiThreadServer  implements Runnable {
     private boolean handelTransferringSystem() {
         System.out.println("[ % ] Start Transferring System ....");
         try {
-            SecretKey secretKeyForTransferringSystem = Encrypt.getKey( this.clientModel.getSerialCode() ) ;
-            long amount = Long.parseLong(Objects.requireNonNull(Encrypt.decryptMessage(secretKeyForTransferringSystem, String.valueOf(this.objectInputStream.readObject()))));
-            long accountNumber = Long.parseLong(Objects.requireNonNull(Encrypt.decryptMessage(secretKeyForTransferringSystem, String.valueOf(this.objectInputStream.readObject()))));
-            String reasonMessage = Encrypt.decryptMessage( secretKeyForTransferringSystem , String.valueOf(this.objectInputStream.readObject())) ;
+            this.sessionKey = Encrypt.decryptSecretKey(Base64.getDecoder().decode(String.valueOf(this.objectInputStream.readObject())) , this.privateKey ) ;
+            long amount = Long.parseLong(Objects.requireNonNull(Encrypt.decryptMessage(this.sessionKey, String.valueOf(this.objectInputStream.readObject()))));
+            long accountNumber = Long.parseLong(Objects.requireNonNull(Encrypt.decryptMessage(this.sessionKey, String.valueOf(this.objectInputStream.readObject()))));
+            String reasonMessage = Encrypt.decryptMessage( sessionKey , String.valueOf(this.objectInputStream.readObject())) ;
 
             // Amount > Current Deposit
            if ( clientModel.getDeposit() < amount ) {

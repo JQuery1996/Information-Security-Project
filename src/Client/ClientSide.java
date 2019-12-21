@@ -1,10 +1,12 @@
 package Client;
 
 import Encryption.Encrypt;
+import Encryption.RsaEncrypt;
 
 import javax.crypto.SecretKey;
 import java.io.*;
 import java.net.Socket;
+import java.security.PublicKey;
 
 public class ClientSide {
     private static final int PORT_NUMBER = 9090 ;
@@ -15,6 +17,9 @@ public class ClientSide {
     private BufferedReader keyboardReader  ;
     private SecretKey secretKey  ;
     private final String SECRET_CODE = "TOP_SECRET" ;
+    private SecretKey sessionKey ;
+    private PublicKey publicKey ;
+    private PublicKey serverpublicKey   ;
 
     private ClientSide() {
         try {
@@ -66,7 +71,13 @@ public class ClientSide {
                 System.out.println("[ ! ] Login Fail Please Reenter Your Information");
                 return this.loginOperation() ;
             }
+
+            // Receive keys
+            this.publicKey = new RsaEncrypt().StringToPublicKey(String.valueOf(this.objectInputStream.readObject())) ;
+            this.serverpublicKey = (PublicKey) this.objectInputStream.readObject();
+
             System.out.println("[ (: ] Login Success...");
+
 
         } catch (IOException | ClassNotFoundException e) {
             e.printStackTrace();
@@ -76,8 +87,6 @@ public class ClientSide {
     private boolean transferSystem() {
         try {
             System.out.println("[ * ] Welcome To Transfer System....") ;
-            System.out.println("[ > ] First Of All Enter Your Bank Serial Code : ");
-            String bankCode = this.keyboardReader.readLine() ;
             System.out.println("[ > ] Enter Transfer Amount : ") ;
             long amount = Long.parseLong(this.keyboardReader.readLine());
             System.out.println("[ > ] Enter The Target Account Number : ") ;
@@ -85,12 +94,15 @@ public class ClientSide {
             System.out.println("[ > ] Enter The Reason For This Operation : ") ;
             String reasonMessage = this.keyboardReader.readLine() ;
 
-            // Generate SecretKey From The Bank Serial Code
-            SecretKey secretKeyForTransferringData = Encrypt.getKey( bankCode ) ;
+            this.sessionKey = Encrypt.generateSecretKey() ;
+            String sessionKeyEncrypted = Encrypt.encryptSecretKey( sessionKey , this.serverpublicKey )  ;
+
+            // Send Encrypted Seession Key To Server
+            this.objectOutputStream.writeObject( sessionKeyEncrypted ) ;
             // Send Encrypted Data To The Server
-            this.objectOutputStream.writeObject( Encrypt.encryptMessage( secretKeyForTransferringData , amount ))  ;
-            this.objectOutputStream.writeObject( Encrypt.encryptMessage( secretKeyForTransferringData , accountNumber  ))  ;
-            this.objectOutputStream.writeObject( Encrypt.encryptMessage( secretKeyForTransferringData , reasonMessage ))  ;
+            this.objectOutputStream.writeObject( Encrypt.encryptMessage( this.sessionKey , amount ))  ;
+            this.objectOutputStream.writeObject( Encrypt.encryptMessage( this.sessionKey, accountNumber  ))  ;
+            this.objectOutputStream.writeObject( Encrypt.encryptMessage( this.sessionKey, reasonMessage ))  ;
 
             // Get The Response From The Server
             boolean transferStatus = (boolean) this.objectInputStream.readObject() ;
