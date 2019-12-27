@@ -2,30 +2,51 @@ package Client;
 
 import Encryption.Encrypt;
 import Encryption.RsaEncrypt;
+import MessageStucture.MessageBody;
 
 import javax.crypto.SecretKey;
 import java.io.*;
 import java.net.Socket;
+import java.security.PrivateKey;
 import java.security.PublicKey;
+import java.util.UUID;
 
 public class ClientSide {
-    private static final int PORT_NUMBER = 9090 ;
-    private static final String HOST_NAME = "localhost" ;
-    private Socket socket  ;
-    private ObjectInputStream objectInputStream  = null ;
-    private ObjectOutputStream objectOutputStream = null ;
+    private static final int SERVER_PORT_NUMBER = 9090 ;
+    private static final String SERVER_HOST_NAME = "localhost" ;
+
+    private static final int TRUSTED_CENTER_PORT_NUMBER = 9091 ;
+    private static final String TRUSTED_CENTER_HOST_NAME = "localhost" ;
+
+    private Socket clientSocket;
+    private ObjectInputStream clientObjectInputStream = null ;
+    private ObjectOutputStream clientObjectOutputStream = null ;
+
+    private Socket trustedCenterSocket ;
+    private ObjectOutputStream trustedCenterObjectOutputStream ;
+    private ObjectInputStream trustedCenterObjectInputStream ;
+
     private BufferedReader keyboardReader  ;
     private SecretKey secretKey  ;
     private final String SECRET_CODE = "TOP_SECRET" ;
     private SecretKey sessionKey ;
     private PublicKey publicKey ;
-    private PublicKey serverpublicKey   ;
+    private PrivateKey privateKey ;
+    private PublicKey serverPublicKey;
+
+    private PublicKey trustedCenterPublicKey ;
+
 
     private ClientSide() {
         try {
-            this.socket = new Socket( ClientSide.HOST_NAME , ClientSide.PORT_NUMBER ) ;
-            this.objectOutputStream = new ObjectOutputStream(socket.getOutputStream()) ;
-            this.objectInputStream = new ObjectInputStream(socket.getInputStream());
+            this.clientSocket = new Socket( ClientSide.SERVER_HOST_NAME, ClientSide.SERVER_PORT_NUMBER) ;
+            this.clientObjectOutputStream = new ObjectOutputStream(clientSocket.getOutputStream()) ;
+            this.clientObjectInputStream = new ObjectInputStream(clientSocket.getInputStream());
+
+            this.trustedCenterSocket = new Socket( ClientSide.TRUSTED_CENTER_HOST_NAME , ClientSide.TRUSTED_CENTER_PORT_NUMBER ) ;
+            this.trustedCenterObjectOutputStream = new ObjectOutputStream( this.trustedCenterSocket.getOutputStream()) ;
+            this.trustedCenterObjectInputStream = new ObjectInputStream( this.trustedCenterSocket.getInputStream());
+
 
             this.keyboardReader = new BufferedReader( new InputStreamReader( System.in )) ;
             this.secretKey = Encrypt.generateSecretKey() ;
@@ -36,6 +57,7 @@ public class ClientSide {
     public static void main(String[] args) {
         ClientSide clientSide  = new ClientSide () ;
         clientSide.loginOperation()  ;
+        clientSide.exchangePublicKeyWithTrustedCenter() ;
         clientSide.transferSystem() ;
 
     }
@@ -61,11 +83,11 @@ public class ClientSide {
 
 
             // Send Login Information To Server Side To Check Authentication
-            this.objectOutputStream.writeObject( Encrypt.encryptMessage( this.secretKey , accountNumber ));
-            this.objectOutputStream.writeObject( Encrypt.encryptMessage( this.secretKey , password ));
+            this.clientObjectOutputStream.writeObject( Encrypt.encryptMessage( this.secretKey , accountNumber ));
+            this.clientObjectOutputStream.writeObject( Encrypt.encryptMessage( this.secretKey , password ));
 
             // Get Response From The Server
-            boolean loginStatus = (boolean) this.objectInputStream.readObject();
+            boolean loginStatus = (boolean) this.clientObjectInputStream.readObject();
             // if Login Failed Then Redo Full Operation
             if ( ! loginStatus ) {
                 System.out.println("[ ! ] Login Fail Please Reenter Your Information");
@@ -73,8 +95,9 @@ public class ClientSide {
             }
 
             // Receive keys
-            this.publicKey = new RsaEncrypt().StringToPublicKey(String.valueOf(this.objectInputStream.readObject())) ;
-            this.serverpublicKey = (PublicKey) this.objectInputStream.readObject();
+            this.publicKey = new RsaEncrypt().StringToPublicKey(String.valueOf(this.clientObjectInputStream.readObject())) ;
+            this.privateKey = new RsaEncrypt().StringToPrivateKey( String.valueOf( this.clientObjectInputStream.readObject())) ;
+            this.serverPublicKey = (PublicKey) this.clientObjectInputStream.readObject();
 
             System.out.println("[ (: ] Login Success...");
 
@@ -95,19 +118,29 @@ public class ClientSide {
             String reasonMessage = this.keyboardReader.readLine() ;
 
             this.sessionKey = Encrypt.generateSecretKey() ;
-            String sessionKeyEncrypted = Encrypt.encryptSecretKey( sessionKey , this.serverpublicKey )  ;
+            String sessionKeyEncrypted = Encrypt.encryptSecretKey( sessionKey , this.trustedCenterPublicKey)  ;
 
-            // Send Encrypted Seession Key To Server
-            this.objectOutputStream.writeObject( sessionKeyEncrypted ) ;
-            // Send Encrypted Data To The Server
-            this.objectOutputStream.writeObject( Encrypt.encryptMessage( this.sessionKey , amount ))  ;
-            this.objectOutputStream.writeObject( Encrypt.encryptMessage( this.sessionKey, accountNumber  ))  ;
-            this.objectOutputStream.writeObject( Encrypt.encryptMessage( this.sessionKey, reasonMessage ))  ;
+            String encryptedUniqueId = Encrypt.encryptMessage( this.sessionKey , UUID.randomUUID());
+            String encryptedAccountNumber = Encrypt.encryptMessage( this.sessionKey , accountNumber ) ;
+            String encryptedAmount = Encrypt.encryptMessage( this.sessionKey , amount ) ;
+            String encryptedReasonMessage = Encrypt.encryptMessage( this.sessionKey , reasonMessage ) ;
+            MessageBody messageBody = new MessageBody( encryptedUniqueId , encryptedAccountNumber , encryptedAmount , encryptedReasonMessage ) ;
+            String signatureMessage = Encrypt.sign( messageBody.toString() , this.privateKey ) ;
+
+            // Send Encrypted Session Key To Trusted Center
+            this.trustedCenterObjectOutputStream.writeObject( sessionKeyEncrypted ) ;
+
+            // Send Signature to Trusted Center
+            this.trustedCenterObjectOutputStream.writeObject( signatureMessage );
+
+            // Send Encrypted Message To Trusted Center
+            this.trustedCenterObjectOutputStream.writeObject( messageBody );
 
             // Get The Response From The Server
-            boolean transferStatus = (boolean) this.objectInputStream.readObject() ;
+            boolean transferStatus = (boolean) this.trustedCenterObjectInputStream.readObject() ;
+            String responseMessage = (String) this.trustedCenterObjectInputStream.readObject();
             if ( !transferStatus ) {
-                System.out.println("[ $ ] Error Happened ... Please Try Again With Another Data .... " ) ;
+                System.out.println(responseMessage) ;
                 return this.transferSystem() ;
             }
             System.out.println("[ - ] Transfer Completed .... ") ;
@@ -117,7 +150,7 @@ public class ClientSide {
                 answer = this.keyboardReader.readLine() ;
             }while (!answer.equalsIgnoreCase("yes") && !answer.equalsIgnoreCase("no"))  ;
 
-            this.objectOutputStream.writeObject(answer.equalsIgnoreCase("yes"));
+            this.trustedCenterObjectOutputStream.writeObject(answer.equalsIgnoreCase("yes"));
             if ( answer.equalsIgnoreCase("yes") )
                 return this.transferSystem();
             else
@@ -127,6 +160,18 @@ public class ClientSide {
         } catch (IOException | ClassNotFoundException e) {
             e.printStackTrace();
         }
-        return false ;
+        return this.transferSystem() ;
+    }
+    private boolean exchangePublicKeyWithTrustedCenter() {
+        try {
+            System.out.println("[ + ] Receive Trusted Center Public Key ... ");
+            this.trustedCenterPublicKey = (PublicKey) this.trustedCenterObjectInputStream.readObject();
+            System.out.println("[ _ ] Send My Public Key To Trusted Center ... ");
+            this.trustedCenterObjectOutputStream.writeObject( this.publicKey );
+            return true  ;
+        } catch (IOException | ClassNotFoundException e) {
+            e.printStackTrace();
+        }
+        return this.exchangePublicKeyWithTrustedCenter() ;
     }
 }

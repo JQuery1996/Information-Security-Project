@@ -94,7 +94,33 @@ public class MySqlManager {
         return false ;
     }
 
+    public boolean findByUniqueId ( String uniqueId) {
+        try {
+            PreparedStatement preparedStatement = this.connection.prepareStatement("SELECT * FROM bank.`transactions` where unique_id = ?") ;
+            preparedStatement.setString( 1 , uniqueId );
+            return preparedStatement.executeQuery().next() ;
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return false ;
+    }
 
+    public boolean insertNewTransaction(String uniqueId , long targetAccountNumber , long amount , String message , String signature , String  date ) {
+        try {
+            PreparedStatement preparedStatement = this.connection.prepareStatement("INSERT INTO `bank`.`transactions` (`unique_id`, `target_account_number`, `amount`, `message`, `signature`, `date`) VALUES(?  , ? , ? , ? , ? , ? )") ;
+            preparedStatement.setString( 1 , uniqueId );
+            preparedStatement.setLong(   2 , targetAccountNumber);
+            preparedStatement.setLong(   3 , amount );
+            preparedStatement.setString( 4 , message );
+            preparedStatement.setString( 5 , signature );
+            preparedStatement.setString( 6 , date );
+            preparedStatement.executeUpdate() ;
+            return true ;
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return false ;
+    }
 
 
 }

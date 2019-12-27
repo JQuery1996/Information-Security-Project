@@ -2,6 +2,7 @@ package Server;
 
 import Encryption.Encrypt;
 import Encryption.RsaEncrypt;
+import MessageStucture.MessageBody;
 import Model.ClientModel;
 import MyDataBase.MySqlManager;
 
@@ -18,25 +19,44 @@ import java.util.Base64;
 import java.util.Objects;
 
 public class MultiThreadServer  implements Runnable {
-    private ObjectOutputStream objectOutputStream ;
-    private ObjectInputStream  objectInputStream ;
-    private Socket client ;
-    private ClientModel clientModel ;
+
+    private final String SERIAL_CODE = "TOP_SECRET" ;
+    private SecretKey sessionKey  ;
     private SecretKey secretKey ;
     private PublicKey publicKey ;
     private PrivateKey privateKey ;
-    private final String SERIAL_CODE = "TOP_SECRET" ;
-    private SecretKey sessionKey  ;
-    public MultiThreadServer ( Socket client ) {
+
+    private PublicKey clientPublicKey ;
+    private PublicKey trustedCenterPublicKey ;
+
+    private Socket clientSocket ;
+    private ObjectOutputStream clientObjectOutputStream ;
+    private ObjectInputStream clientObjectInputStream ;
+
+    private Socket trustedCenterSocket ;
+    private ObjectOutputStream trustedCenterObjectOutputStream ;
+    private ObjectInputStream trustedCenterObjectInputStream ;
+
+    private ClientModel clientModel ;
+
+
+    public MultiThreadServer ( Socket clientSocket  , Socket trustedCenterSocket , PublicKey publicKey  , PrivateKey privateKey , PublicKey trustedCenterPublicKey ) {
         try {
-            this.client = client ;
+            this.clientSocket = clientSocket ;
+            this.trustedCenterSocket = trustedCenterSocket ;
             // [ Input , Output ]  Configuration
-            this.objectOutputStream = new ObjectOutputStream ( this.client.getOutputStream() ) ;
-            this.objectInputStream  = new ObjectInputStream  ( this.client.getInputStream () ) ;
+            this.clientObjectOutputStream = new ObjectOutputStream ( this.clientSocket.getOutputStream() ) ;
+            this.clientObjectInputStream = new ObjectInputStream  ( this.clientSocket.getInputStream () ) ;
+
+            this.trustedCenterObjectOutputStream = new ObjectOutputStream(trustedCenterSocket.getOutputStream());
+            this.trustedCenterObjectInputStream = new ObjectInputStream(  this.trustedCenterSocket.getInputStream());
+
             this.secretKey = Encrypt.getKey( this.SERIAL_CODE ) ;
-            RsaEncrypt rsaEncrypt = new RsaEncrypt() ;
-            this.publicKey = rsaEncrypt.getPublicKey() ;
-            this.privateKey = rsaEncrypt.getPrivateKey() ;
+
+            this.publicKey = publicKey ;
+            this.privateKey = privateKey ;
+            this.trustedCenterPublicKey = trustedCenterPublicKey  ;
+
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -51,13 +71,14 @@ public class MultiThreadServer  implements Runnable {
     private boolean handelLogin() {
         System.out.println("[---] Start Login Handler ");
         try {
-            long accountNumber = Long.parseLong(Objects.requireNonNull(Encrypt.decryptMessage(this.secretKey, String.valueOf(this.objectInputStream.readObject()))));
-            String password = Encrypt.decryptMessage( this.secretKey , (String) this.objectInputStream.readObject());
+            long accountNumber = Long.parseLong(Objects.requireNonNull(Encrypt.decryptMessage(this.secretKey, String.valueOf(this.clientObjectInputStream.readObject()))));
+            String password = Encrypt.decryptMessage( this.secretKey , (String) this.clientObjectInputStream.readObject());
             if ( ! makeAuthentication( accountNumber , password ) ) { System.out.println("[!] Login Operation Failed ....") ; this.handelLogin() ; }
 
             // Send Keys To Client
-            this.objectOutputStream.writeObject( this.clientModel.getPublicKey() );
-            this.objectOutputStream.writeObject( this.publicKey ) ;
+            this.clientObjectOutputStream.writeObject( this.clientModel.getPublicKey() );
+            this.clientObjectOutputStream.writeObject( this.clientModel.getPrivateKey() );
+            this.clientObjectOutputStream.writeObject( this.publicKey ) ;
 
             System.out.println("[#] Login Operation Has Been Completed Successfully...");
 
@@ -75,7 +96,7 @@ public class MultiThreadServer  implements Runnable {
         try {
             if ( clientRecord.next() ) {
                 // Send Response To The Server
-                this.objectOutputStream.writeObject( true );
+                this.clientObjectOutputStream.writeObject( true );
                 this.clientModel = new ClientModel(
                         clientRecord.getLong("id") ,
                         clientRecord.getString("first_name") ,
@@ -96,7 +117,7 @@ public class MultiThreadServer  implements Runnable {
                 }
                 return true  ;
             }else {
-                this.objectOutputStream.writeObject( false );
+                this.clientObjectOutputStream.writeObject( false );
                 return false  ;
             }
         } catch (SQLException | IOException e) {
@@ -105,25 +126,44 @@ public class MultiThreadServer  implements Runnable {
         return false  ;
     }
     private boolean handelTransferringSystem() {
-        System.out.println("[ % ] Start Transferring System ....");
         try {
-            this.sessionKey = Encrypt.decryptSecretKey(Base64.getDecoder().decode(String.valueOf(this.objectInputStream.readObject())) , this.privateKey ) ;
-            long amount = Long.parseLong(Objects.requireNonNull(Encrypt.decryptMessage(this.sessionKey, String.valueOf(this.objectInputStream.readObject()))));
-            long accountNumber = Long.parseLong(Objects.requireNonNull(Encrypt.decryptMessage(this.sessionKey, String.valueOf(this.objectInputStream.readObject()))));
-            String reasonMessage = Encrypt.decryptMessage( sessionKey , String.valueOf(this.objectInputStream.readObject())) ;
+
+            System.out.println("[ % ] Start Transferring System ....");
+            // Read Session Key
+            this.sessionKey = Encrypt.decryptSecretKey(Base64.getDecoder().decode(String.valueOf(this.trustedCenterObjectInputStream.readObject())) , this.privateKey ) ;
+
+            // Read Signature Message
+            String signatureMessage = (String) trustedCenterObjectInputStream.readObject();
+
+            // Read Encrypted Message
+            MessageBody messagebody = (MessageBody) this.trustedCenterObjectInputStream.readObject();
+
+            // Signature Verify
+            if ( !Encrypt.verify( messagebody.toString() , signatureMessage , this.trustedCenterPublicKey) ) {
+                this.trustedCenterObjectOutputStream.writeObject( false );
+                this.trustedCenterObjectOutputStream.writeObject("[ - ] Error In Verify Message ... Incorrect Message ");
+                return this.handelTransferringSystem();
+            }
+            // Decrypt The Message
+            String uniqueId = Encrypt.decryptMessage( this.sessionKey , messagebody.getUniqueId())  ;
+            long accountNumber = Long.parseLong(Objects.requireNonNull(Encrypt.decryptMessage(this.sessionKey, messagebody.getAccountNumber())));
+            long amount = Long.parseLong(Objects.requireNonNull(Encrypt.decryptMessage(this.sessionKey, messagebody.getAmount())));
+            String reasonMessage = Encrypt.decryptMessage( this.sessionKey , messagebody.getReasonMessage()) ;
 
             // Amount > Current Deposit
            if ( clientModel.getDeposit() < amount ) {
-               this.objectOutputStream.writeObject( false ) ;
-               System.out.println("[ @ ] Transferring System Stop => ( Amount > Deposit ) ... ") ;
+               this.trustedCenterObjectOutputStream.writeObject( false ) ;
+               this.trustedCenterObjectOutputStream.writeObject("[ @ ] Transferring System Stop => ( Amount > Deposit ) ... "); ;
                return this.handelTransferringSystem() ;
            }
 
            if ( makeTransferring( amount , accountNumber ) ) {
-               this.objectOutputStream.writeObject( true )  ;
+               this.trustedCenterObjectOutputStream.writeObject( true )  ;
+               this.trustedCenterObjectOutputStream.writeObject("[ (- ] Transferring System Completed ...");
                System.out.println("[ (- ] Transferring System Completed ... ");
                // Check if customer need to do more transferring
-               boolean more = (boolean) this.objectInputStream.readObject();
+               System.out.println("[ = ] Waiting For Client More Transactions....");
+               boolean more = (boolean) this.trustedCenterObjectInputStream.readObject();
                if ( more ) {
                    System.out.println("[ - ] Restart Transferring System For Another Transfer Operation ... ");
                    return this.handelTransferringSystem();
@@ -133,12 +173,14 @@ public class MultiThreadServer  implements Runnable {
                }
            } else {
                System.out.println("[ )- ] Transferring System Fail...");
-               this.objectOutputStream.writeObject( false ) ;
+               this.trustedCenterObjectOutputStream.writeObject( false ) ;
+               this.trustedCenterObjectOutputStream.writeObject("[ )- ] Transferring System Fail...");
+               return this.handelTransferringSystem() ;
            }
         } catch (IOException | ClassNotFoundException e) {
             e.printStackTrace();
         }
-        return this.handelTransferringSystem() ;
+        return false ;
     }
 
     private boolean makeTransferring(long amount, long accountNumber) {

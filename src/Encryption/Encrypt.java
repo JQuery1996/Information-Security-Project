@@ -82,4 +82,29 @@ public class Encrypt {
         return null;
     }
 
+    public static String sign(String message , PrivateKey privateKey) {
+        try {
+            Signature privateSignature = Signature.getInstance("SHA256withRSA");
+            privateSignature.initSign(privateKey);
+            privateSignature.update(message.getBytes(UTF_8));
+            byte[] signature = privateSignature.sign();
+            return Base64.getEncoder().encodeToString(signature);
+        } catch (NoSuchAlgorithmException | InvalidKeyException | SignatureException e) {
+            e.printStackTrace();
+        }
+        return "" ;
+    }
+
+    public static boolean verify(String message, String signature, PublicKey publicKey){
+        try {
+            Signature publicSignature = Signature.getInstance("SHA256withRSA");
+            publicSignature.initVerify(publicKey);
+            publicSignature.update(message.getBytes(UTF_8));
+            byte[] signatureBytes = Base64.getDecoder().decode(signature);
+            return publicSignature.verify(signatureBytes);
+        } catch (NoSuchAlgorithmException | InvalidKeyException | SignatureException e) {
+            e.printStackTrace();
+        }
+        return false ;
+    }
 }
